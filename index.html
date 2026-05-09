@@ -100,6 +100,33 @@ canvas {
 .btn-restart:hover { background: #ffdd44; }
 .stage-info { font-size: 13px; text-align: center; margin-bottom: 10px; color: #0af; }
 #lifeIcons { font-size: 16px; letter-spacing: 2px; }
+/* Lobby */
+.lobby-overlay {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.85); display: flex; align-items: center;
+  justify-content: center; z-index: 100;
+}
+.lobby-box {
+  background: #1a1a2e; border: 2px solid #444; border-radius: 12px;
+  padding: 40px 48px; text-align: center; min-width: 340px;
+  box-shadow: 0 0 60px rgba(0,100,255,0.15);
+}
+.lobby-box h1 { font-size: 36px; color: #ffcc00; margin: 0 0 4px 0; letter-spacing: 4px; }
+.lobby-subtitle { font-size: 13px; color: #666; margin: 0 0 24px 0; letter-spacing: 6px; text-transform: uppercase; }
+.lobby-btn {
+  display: block; width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #555;
+  border-radius: 6px; background: #222; color: #fff; font-size: 15px;
+  cursor: pointer; transition: all 0.2s;
+}
+.lobby-btn:hover { background: #333; border-color: #ffcc00; }
+.lobby-btn.small { display: inline-block; width: auto; padding: 8px 18px; font-size: 13px; }
+.join-row { display: flex; gap: 8px; margin-top: 12px; align-items: center; justify-content: center; }
+.join-row input {
+  width: 100px; padding: 8px 10px; border: 1px solid #555; border-radius: 6px;
+  background: #222; color: #fff; font-size: 18px; letter-spacing: 4px;
+  outline: none;
+}
+.join-row input:focus { border-color: #ffcc00; }
 </style>
 </head>
 <body>
@@ -122,6 +149,32 @@ canvas {
       <kbd>Space</kbd> 射击<br>
       <kbd>P</kbd> 暂停
     </div>
+  </div>
+</div>
+
+<!-- Lobby Overlay -->
+<div id="lobbyOverlay" class="lobby-overlay">
+  <div class="lobby-box">
+    <h1>坦克大战</h1>
+    <p class="lobby-subtitle">Battle City</p>
+    <div id="lobbyMain">
+      <button class="lobby-btn" onclick="startSinglePlayer()">🎮 单人游戏</button>
+      <button class="lobby-btn" onclick="showCreateRoom()">🌐 创建房间</button>
+      <div style="margin-top:12px;font-size:13px;color:#888;">—— 或 ——</div>
+      <div class="join-row">
+        <input type="text" id="roomCodeInput" maxlength="4" placeholder="房间码" style="text-transform:uppercase;text-align:center;">
+        <button class="lobby-btn small" onclick="joinRoom()">加入</button>
+      </div>
+    </div>
+    <div id="lobbyWaiting" style="display:none;">
+      <p style="font-size:18px;margin-bottom:10px;">等待对手加入...</p>
+      <p style="font-size:14px;color:#888;">房间码</p>
+      <p id="roomCodeDisplay" style="font-size:36px;font-weight:bold;color:#ffcc00;letter-spacing:6px;"></p>
+      <p style="margin-top:16px;font-size:12px;color:#666;">将此房间码发送给朋友</p>
+      <button class="lobby-btn small" style="margin-top:12px;" onclick="cancelRoom()">取消</button>
+    </div>
+    <div id="lobbyError" style="display:none;color:#f44;margin-top:10px;font-size:13px;"></div>
+    <div id="lobbyConnStatus" style="margin-top:12px;font-size:12px;color:#666;">连接中...</div>
   </div>
 </div>
 
@@ -248,6 +301,7 @@ const game = {
   stage: 1,
   map: null,
   player: null,
+  remotePlayer: null,    // 联机对手坦克
   enemies: [],
   bullets: [],
   explosions: [],
@@ -269,6 +323,13 @@ const game = {
   shootCooldown: 15,
   invincible: false,       // 米线无敌状态
   powerupSpawnTimer: 0,    // 米线生成计时
+  // Multiplayer
+  mode: 'single',          // 'single' | 'multiplayer'
+  ws: null,
+  roomCode: null,
+  isHost: false,
+  connected: false,
+  gameStarted: false,
 };
 
 // ============================================================
@@ -413,6 +474,7 @@ class Bullet {
     this.dir = dir;
     this.speed = 4;
     this.isPlayer = isPlayer;
+    this.isRemote = false;
     this.alive = true;
     this.size = 6;
   }
@@ -445,6 +507,10 @@ class Bullet {
         map[row][col] = T.EMPTY;
         this.alive = false;
         game.explosions.push(new Explosion(col * TILE, row * TILE, false));
+        // multiplayer: sync map destruction
+        if (this.isPlayer && !this.isRemote && game.mode === 'multiplayer' && game.ws && game.connected) {
+          game.ws.send(JSON.stringify({ type: 'map_update', tile: { row, col } }));
+        }
         return;
       } else if (tile === T.STEEL) {
         this.alive = false;
@@ -761,7 +827,16 @@ function updatePlayer() {
 
   if (game.keys[' '] && p.cooldown <= 0) {
     const b = p.shoot();
-    if (b) game.bullets.push(b);
+    if (b) {
+      game.bullets.push(b);
+      // multiplayer: send bullet to opponent
+      if (game.mode === 'multiplayer' && game.ws && game.connected) {
+        game.ws.send(JSON.stringify({
+          type: 'bullet_fired',
+          bullet: { x: b.x, y: b.y, dir: b.dir }
+        }));
+      }
+    }
   }
 }
 
@@ -887,6 +962,19 @@ function update() {
 
   updatePlayer();
 
+  // Multiplayer: send state to server
+  if (game.mode === 'multiplayer' && game.ws && game.connected && game.player) {
+    game.ws.send(JSON.stringify({
+      type: 'player_state',
+      state: {
+        x: Math.round(game.player.x),
+        y: Math.round(game.player.y),
+        dir: game.player.dir,
+        alive: game.player.alive,
+      }
+    }));
+  }
+
   // update enemies
   for (const e of game.enemies) {
     if (!e.alive) continue;
@@ -979,6 +1067,10 @@ function draw() {
 
   // tanks
   if (game.player && game.player.alive) game.player.draw(ctx);
+  // remote player (multiplayer)
+  if (game.mode === 'multiplayer' && game.remotePlayer && game.remotePlayer.alive) {
+    game.remotePlayer.draw(ctx);
+  }
   for (const e of game.enemies) {
     e.draw(ctx);
   }
@@ -1008,6 +1100,190 @@ function draw() {
     ctx.textBaseline = 'middle';
     ctx.fillText('暂停', canvas.width / 2, canvas.height / 2);
   }
+}
+
+// ============================================================
+//  MULTIPLAYER — WebSocket
+// ============================================================
+const WS_URL = window.location.hostname === 'krisy-y.github.io'
+  ? 'wss://tank-battle-server.onrender.com'
+  : 'ws://localhost:3000';
+
+function connectWebSocket() {
+  if (game.ws) try { game.ws.close(); } catch {}
+  document.getElementById('lobbyConnStatus').textContent = '连接中...';
+  try {
+    game.ws = new WebSocket(WS_URL);
+  } catch (e) {
+    document.getElementById('lobbyConnStatus').textContent = '连接失败: ' + e.message;
+    return;
+  }
+
+  game.ws.onopen = () => {
+    game.connected = true;
+    document.getElementById('lobbyConnStatus').textContent = '已连接 ✓';
+  };
+
+  game.ws.onclose = () => {
+    game.connected = false;
+    if (document.getElementById('lobbyOverlay').style.display !== 'none') {
+      document.getElementById('lobbyConnStatus').textContent = '连接断开';
+    }
+    if (game.mode === 'multiplayer' && game.gameStarted) {
+      showLobbyError('对手已断开连接');
+      leaveMultiplayer();
+    }
+  };
+
+  game.ws.onerror = () => {
+    document.getElementById('lobbyConnStatus').textContent = '连接错误';
+  };
+
+  game.ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    handleServerMessage(msg);
+  };
+}
+
+function handleServerMessage(msg) {
+  switch (msg.type) {
+    case 'room_created':
+      game.roomCode = msg.code;
+      game.isHost = true;
+      document.getElementById('lobbyMain').style.display = 'none';
+      document.getElementById('lobbyWaiting').style.display = 'block';
+      document.getElementById('lobbyError').style.display = 'none';
+      document.getElementById('roomCodeDisplay').textContent = msg.code;
+      break;
+
+    case 'room_joined':
+      game.roomCode = msg.code;
+      game.isHost = false;
+      document.getElementById('lobbyMain').style.display = 'none';
+      document.getElementById('lobbyWaiting').style.display = 'block';
+      document.getElementById('lobbyError').style.display = 'none';
+      document.getElementById('roomCodeDisplay').textContent = msg.code;
+      document.getElementById('lobbyWaiting').querySelector('p').textContent = '等待房主开始...';
+      setTimeout(() => {
+        if (game.connected) {
+          game.ws.send(JSON.stringify({ type: 'request_join_info' }));
+        }
+      }, 500);
+      break;
+
+    case 'opponent_joined':
+      startMultiplayerGame();
+      break;
+
+    case 'opponent_disconnected':
+      showLobbyError('对手已离开');
+      leaveMultiplayer();
+      break;
+
+    case 'opponent_state':
+      if (game.remotePlayer) {
+        game.remotePlayer.x = msg.state.x;
+        game.remotePlayer.y = msg.state.y;
+        game.remotePlayer.dir = msg.state.dir;
+        game.remotePlayer.alive = msg.state.alive;
+      }
+      break;
+
+    case 'opponent_bullet': {
+      const b = msg.bullet;
+      const bullet = new Bullet(b.x, b.y, b.dir, false);
+      bullet.isRemote = true;
+      game.bullets.push(bullet);
+      break;
+    }
+
+    case 'map_update':
+      if (game.map && msg.tile) {
+        const { row, col } = msg.tile;
+        if (row >= 0 && row < ROWS && col >= 0 && col < COLS) {
+          game.map[row][col] = T.EMPTY;
+          game.explosions.push(new Explosion(col * TILE, row * TILE, false));
+        }
+      }
+      break;
+
+    case 'error':
+      showLobbyError(msg.message);
+      break;
+  }
+}
+
+function showCreateRoom() {
+  if (!game.connected) { connectWebSocket(); return; }
+  game.ws.send(JSON.stringify({ type: 'create_room' }));
+}
+
+function joinRoom() {
+  if (!game.connected) { connectWebSocket(); return; }
+  const code = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+  if (code.length !== 4) { showLobbyError('请输入4位房间码'); return; }
+  game.ws.send(JSON.stringify({ type: 'join_room', code }));
+}
+
+function cancelRoom() {
+  if (game.ws) { try { game.ws.close(); } catch {} }
+  game.ws = null;
+  game.roomCode = null;
+  document.getElementById('lobbyMain').style.display = 'block';
+  document.getElementById('lobbyWaiting').style.display = 'none';
+  document.getElementById('lobbyError').style.display = 'none';
+  connectWebSocket();
+}
+
+function showLobbyError(msg) {
+  const el = document.getElementById('lobbyError');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function leaveMultiplayer() {
+  if (game.ws) { try { game.ws.close(); } catch {} }
+  game.ws = null;
+  game.mode = 'single';
+  game.remotePlayer = null;
+  game.roomCode = null;
+  game.isHost = false;
+  game.gameStarted = false;
+  game.over = true;
+}
+
+function startMultiplayerGame() {
+  game.mode = 'multiplayer';
+  game.gameStarted = true;
+  document.getElementById('lobbyOverlay').style.display = 'none';
+  startGameCommon();
+  game.remotePlayer = new Tank(2 * TILE, 16 * TILE, 0, '#4af', false);
+}
+
+function startSinglePlayer() {
+  game.mode = 'single';
+  document.getElementById('lobbyOverlay').style.display = 'none';
+  startGameCommon();
+}
+
+function startGameCommon() {
+  game.stage = 1;
+  game.score = 0;
+  game.lives = 3;
+  game.totalKills = 0;
+  game.enemies = [];
+  game.bullets = [];
+  game.explosions = [];
+  game.powerups = [];
+  game.invincible = false;
+  game.powerupSpawnTimer = 1;
+  game.over = false;
+  game.won = false;
+  game.paused = false;
+  game.map = buildMap(1);
+  game.player = new Tank(9 * TILE, 16 * TILE, 0, '#4a4', true);
+  gameLoop();
 }
 
 // ============================================================
@@ -1041,10 +1317,8 @@ document.getElementById('restartBtn').addEventListener('click', restartGame);
 //  INIT
 // ============================================================
 function init() {
-  game.map = buildMap(1);
-  game.player = new Tank(9 * TILE, 16 * TILE, 0, '#4a4', true);
-  game.powerupSpawnTimer = 1;
-  gameLoop();
+  // Connect WebSocket in background, show lobby
+  connectWebSocket();
 }
 
 init();

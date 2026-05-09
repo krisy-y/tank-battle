@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=no git@github.com)"
+    ]
+  }
+}
