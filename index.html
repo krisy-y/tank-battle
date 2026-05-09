@@ -846,7 +846,7 @@ function nextStage() {
   game.explosions = [];
   game.powerups = [];
   game.invincible = false;
-  game.powerupSpawnTimer = rand(120, 240);
+  game.powerupSpawnTimer = 1;
   game.player = new Tank(9 * TILE, 16 * TILE, 0, '#4a4', true);
   game.over = false;
   game.won = false;
@@ -866,7 +866,7 @@ function restartGame() {
   game.explosions = [];
   game.powerups = [];
   game.invincible = false;
-  game.powerupSpawnTimer = rand(120, 240);
+  game.powerupSpawnTimer = 1;
   game.spawnQueue = [];
   game.over = false;
   game.won = false;
@@ -1043,7 +1043,7 @@ document.getElementById('restartBtn').addEventListener('click', restartGame);
 function init() {
   game.map = buildMap(1);
   game.player = new Tank(9 * TILE, 16 * TILE, 0, '#4a4', true);
-  game.powerupSpawnTimer = rand(120, 240);
+  game.powerupSpawnTimer = 1;
   gameLoop();
 }
 
