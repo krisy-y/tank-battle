@@ -113,6 +113,7 @@ canvas {
     <div class="stat">生命 <span id="lives">❤❤❤</span></div>
     <div class="stat">敌人 <span id="enemyCount">0</span></div>
     <div class="stat">击杀 <span id="killCount">0/10</span></div>
+    <div class="stat" id="invincibleStat" style="display:none; color:#ffcc00;">无敌 <span>✦ 已激活</span></div>
     <div id="gameOver">GAME OVER</div>
     <div id="gameWin">VICTORY!</div>
     <button class="btn-restart" id="restartBtn">重新开始</button>
@@ -250,6 +251,7 @@ const game = {
   enemies: [],
   bullets: [],
   explosions: [],
+  powerups: [],
   score: 0,
   lives: 3,
   totalKills: 0,
@@ -265,6 +267,8 @@ const game = {
   keys: {},
   lastShootFrame: 0,
   shootCooldown: 15,
+  invincible: false,       // 米线无敌状态
+  powerupSpawnTimer: 0,    // 米线生成计时
 };
 
 // ============================================================
@@ -369,6 +373,24 @@ class Tank {
     ctx.fillStyle = this.isPlayer ? '#ddd' : '#cc0';
     ctx.fillRect(cx - 2, y - 2, 4, 8);
 
+    // invincibility shield
+    if (game.invincible) {
+      const pulse = Math.sin(game.frame * 0.15) * 0.2 + 0.8;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(-this.dir * Math.PI / 2);
+      ctx.translate(-cx, -cy);
+      ctx.strokeStyle = `rgba(255, 215, 0, ${pulse * 0.6})`;
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = '#ffcc00';
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.arc(cx, cy, this.size * 0.75, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+
     ctx.restore();
   }
 }
@@ -457,7 +479,9 @@ class Bullet {
         if (this.x < p.x + p.size && this.x + this.size > p.x &&
             this.y < p.y + p.size && this.y + this.size > p.y) {
           this.alive = false;
-          playerDie();
+          if (!game.invincible) {
+            playerDie();
+          }
           return;
         }
       }
@@ -516,6 +540,115 @@ class Explosion {
     ctx.fill();
     ctx.globalAlpha = 1;
   }
+}
+
+// ============================================================
+//  POWERUP — 米线道具
+// ============================================================
+class Powerup {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.size = TILE - 4;
+    this.alive = true;
+    this.bob = 0;
+  }
+
+  get cx() { return this.x + this.size / 2; }
+  get cy() { return this.y + this.size / 2; }
+
+  update() {
+    this.bob += 0.05;
+  }
+
+  draw(ctx) {
+    if (!this.alive) return;
+    const cx = this.x + this.size / 2;
+    const cy = this.y + this.size / 2 + Math.sin(this.bob) * 2;
+    const r = this.size / 2;
+
+    // glow
+    ctx.shadowColor = '#ff9900';
+    ctx.shadowBlur = 12;
+
+    // bowl — outer
+    ctx.fillStyle = '#ffcc66';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 2, r - 1, r * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // soup
+    ctx.fillStyle = '#ffdd88';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, r - 3, r * 0.45, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // noodles — wavy lines
+    ctx.strokeStyle = '#f5deb3';
+    ctx.lineWidth = 1.5;
+    ctx.shadowBlur = 0;
+    for (let i = -3; i <= 3; i += 2) {
+      ctx.beginPath();
+      for (let t = -4; t <= 4; t += 0.5) {
+        const nx = cx + t * 1.8 + Math.sin(this.bob * 2 + i + t * 0.5) * 2;
+        const ny = cy + i + Math.cos(this.bob * 2 + i + t * 0.5) * 1.5;
+        t === -4 ? ctx.moveTo(nx, ny) : ctx.lineTo(nx, ny);
+      }
+      ctx.stroke();
+    }
+
+    // chopsticks
+    ctx.strokeStyle = '#8B4513';
+    ctx.lineWidth = 2;
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, cy - r + 2);
+    ctx.lineTo(cx - 7, cy - r - 6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 5, cy - r + 2);
+    ctx.lineTo(cx + 7, cy - r - 6);
+    ctx.stroke();
+
+    // steam
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    for (let i = 0; i < 3; i++) {
+      const sx = cx - 5 + i * 5 + Math.sin(this.bob * 3 + i * 2) * 2;
+      const sy = cy - r - 2 - i * 3 + Math.sin(this.bob * 2 + i) * 1;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 3 - i * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.shadowBlur = 0;
+  }
+}
+
+function spawnPowerup() {
+  // find a random empty tile
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const c = rand(1, COLS - 2);
+    const r = rand(1, ROWS - 4);
+    if (game.map[r][c] !== T.EMPTY) continue;
+    const x = c * TILE + 2;
+    const y = r * TILE + 2;
+    // don't spawn on player
+    if (game.player && game.player.alive) {
+      if (x < game.player.x + game.player.size && x + TILE > game.player.x &&
+          y < game.player.y + game.player.size && y + TILE > game.player.y) continue;
+    }
+    // don't spawn on enemies
+    let onEnemy = false;
+    for (const e of game.enemies) {
+      if (!e.alive) continue;
+      if (x < e.x + e.size && x + TILE > e.x && y < e.y + e.size && y + TILE > e.y) { onEnemy = true; break; }
+    }
+    if (onEnemy) continue;
+    game.powerups.push(new Powerup(x, y));
+    return true;
+  }
+  return false;
 }
 
 // ============================================================
@@ -711,7 +844,9 @@ function nextStage() {
   game.enemies = [];
   game.bullets = [];
   game.explosions = [];
-  game.map = buildMap(game.stage);
+  game.powerups = [];
+  game.invincible = false;
+  game.powerupSpawnTimer = rand(120, 240);
   game.player = new Tank(9 * TILE, 16 * TILE, 0, '#4a4', true);
   game.over = false;
   game.won = false;
@@ -729,6 +864,9 @@ function restartGame() {
   game.enemies = [];
   game.bullets = [];
   game.explosions = [];
+  game.powerups = [];
+  game.invincible = false;
+  game.powerupSpawnTimer = rand(120, 240);
   game.spawnQueue = [];
   game.over = false;
   game.won = false;
@@ -774,9 +912,34 @@ function update() {
     e.update();
   }
 
+  // powerup spawning
+  if (!game.invincible && game.powerups.length === 0) {
+    game.powerupSpawnTimer--;
+    if (game.powerupSpawnTimer <= 0) {
+      spawnPowerup();
+    }
+  }
+
+  // powerup update & pickup
+  for (const p of game.powerups) {
+    if (!p.alive) continue;
+    p.update();
+    // check player pickup
+    if (game.player && game.player.alive) {
+      if (p.x < game.player.x + game.player.size && p.x + p.size > game.player.x &&
+          p.y < game.player.y + game.player.size && p.y + p.size > game.player.y) {
+        p.alive = false;
+        game.invincible = true;
+        game.score += 200;
+        game.explosions.push(new Explosion(p.x - 5, p.y - 5, true));
+      }
+    }
+  }
+
   // cleanup
   game.bullets = game.bullets.filter(b => b.alive);
   game.explosions = game.explosions.filter(e => e.alive);
+  game.powerups = game.powerups.filter(p => p.alive);
   game.enemies = game.enemies.filter(e => e.alive || e === game.enemies.find(e2 => e2 === e));
 
   // check win
@@ -797,6 +960,12 @@ function update() {
   document.getElementById('lives').textContent = '❤'.repeat(Math.max(0, game.lives));
   document.getElementById('enemyCount').textContent = game.enemies.filter(e => e.alive).length;
   document.getElementById('killCount').textContent = `${game.totalKills}/${game.maxKills}`;
+  const invStat = document.getElementById('invincibleStat');
+  if (game.invincible) {
+    invStat.style.display = 'flex';
+  } else {
+    invStat.style.display = 'none';
+  }
 }
 
 // ============================================================
@@ -822,6 +991,11 @@ function draw() {
   // explosions
   for (const e of game.explosions) {
     e.draw(ctx);
+  }
+
+  // powerups
+  for (const p of game.powerups) {
+    p.draw(ctx);
   }
 
   // pause overlay
@@ -869,6 +1043,7 @@ document.getElementById('restartBtn').addEventListener('click', restartGame);
 function init() {
   game.map = buildMap(1);
   game.player = new Tank(9 * TILE, 16 * TILE, 0, '#4a4', true);
+  game.powerupSpawnTimer = rand(120, 240);
   gameLoop();
 }
 
